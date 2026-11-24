@@ -109,10 +109,4 @@ jobs:
         with:
           name: aura-apk
           path: work/aura/build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: aura-apk
-          path: work/aura/build/app/outputs/flutter-apk/app-release.apk
-          path: work/aura/build/app/outputs/flutter-apk/app-release.apk
+        
