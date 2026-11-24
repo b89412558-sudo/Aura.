@@ -1,36 +1,89 @@
-# This is a basic workflow to help you get started with Actions
+name: Build AURA APK
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Unzip project
+        run: unzip -q aura_phase11.zip -d work
+
+      - name: Create Android platform and patch it
+        working-directory: work/aura
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          flutter create --platforms=android --org com.aura .
+          grep -q AuraApp lib/main.dart || { echo 'ERROR: lib/main.dart was replaced by flutter create'; exit 1; }
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          perms = """    <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+          """
+          if 'BLUETOOTH_SCAN' not in s:
+              s = s.replace('<application', perms + '    <application', 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          PY
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 23/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle* || true
+
+      - name: Put Firebase values into the app
+        working-directory: work/aura
+        run: |
+          sed -i "s|PUT_API_KEY|${{ secrets.FIREBASE_API_KEY }}|; s|PUT_APP_ID|${{ secrets.FIREBASE_APP_ID }}|; s|PUT_SENDER_ID|${{ secrets.FIREBASE_SENDER_ID }}|; s|PUT_PROJECT_ID|${{ secrets.FIREBASE_PROJECT_ID }}|" lib/firebase_options.dart
+
+      - name: Use a fixed signing key
+        run: |
+          mkdir -p ~/.android
+          if [ -f debug.keystore ]; then
+            cp debug.keystore ~/.android/debug.keystore
+          else
+            keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "===== COPY THESE TWO LINES INTO FIREBASE ====="
+          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1|SHA256"
+          echo "=============================================="
+
+      - name: Save the new key
+        if: hashFiles('debug.keystore') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: keystore
+          path: ~/.android/debug.keystore
+
+      - name: Get packages
+        working-directory: work/aura
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: work/aura
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+
+      - name: Build APK
+        working-directory: work/aura
+        run: flutter build apk --release
+
+      - name: Save the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-apk
+          path: work/aura/build/app/outputs/flutter-apk/app-release.apk
+          
